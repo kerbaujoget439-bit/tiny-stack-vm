@@ -76,8 +76,9 @@ function run(pg,inp){
  }
 }
 for(const id of readdirSync(I).sort()){
- const pg=readFileSync(join(I,id,'program.bin')),inp=readFileSync(join(I,id,'input.bin'));
- const [o,e]=run(pg,inp);
+ let st;try{st=readFileSync(join(I,id,'program.bin'));}catch{continue;} // skip non-instance entries
+ const inp=readFileSync(join(I,id,'input.bin'));
+ const [o,e]=run(st,inp);
  mkdirSync(join(O,id),{recursive:true});
  writeFileSync(join(O,id,'stdout.bin'),o);
  writeFileSync(join(O,id,'exit.txt'),String(e)+'\n');
