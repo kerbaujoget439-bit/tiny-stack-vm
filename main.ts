@@ -12,7 +12,32 @@ const IN_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 const STEP_LIMIT = 1000000;
 const OUTPUT_MAX = 65536;
-const enc = new TextEncoder();
+
+// Pops (0..3) and pushes (0..3) per opcode, indexed by opcode byte, plus the
+// immediate length. Built once: only the opcodes the ISA defines are listed;
+// anything else traps 5. Hoisted out of run() so a 40-instance set pays for
+// the table once, not once per program.
+const pops = new Uint8Array(256);
+const push = new Uint8Array(256);
+const imm = new Uint8Array(256);
+const known = new Uint8Array(256);
+{
+  const def = (op, i, p, u) => { known[op] = 1; imm[op] = i; pops[op] = p; push[op] = u; };
+  def(0x00, 0, 0, 0); def(0x01, 1, 0, 1); def(0x02, 4, 0, 1);
+  def(0x03, 0, 1, 0); def(0x04, 0, 1, 2); def(0x05, 0, 2, 2);
+  def(0x06, 0, 2, 3); def(0x07, 0, 3, 3);
+  for (let o = 0x10; o <= 0x16; o++) def(o, 0, 2, 1);
+  def(0x17, 0, 1, 1);
+  for (let o = 0x18; o <= 0x1e; o++) def(o, 0, 2, 1);
+  def(0x1b, 0, 1, 1);
+  for (let o = 0x20; o <= 0x22; o++) def(o, 0, 2, 1);
+  def(0x30, 2, 0, 0); def(0x31, 2, 1, 0); def(0x32, 2, 1, 0);
+  def(0x33, 2, 0, 0); def(0x34, 0, 0, 0);
+  def(0x40, 0, 1, 1); def(0x41, 0, 2, 0);
+  def(0x50, 0, 1, 0); def(0x51, 0, 1, 0); def(0x52, 0, 0, 1); def(0x53, 0, 1, 0);
+}
+// Scratch for PRINT: at most 11 decimal digits ("-2147483648").
+const digits = new Uint8Array(11);
 
 // Runs one program on its input bytes; returns [output bytes, exit code].
 function run(program, input) {
@@ -27,25 +52,6 @@ function run(program, input) {
   let ipos = 0;
   let pc = 0;
   let steps = 0;
-  // Pops (0..3) and pushes (0..3) per opcode, indexed by opcode byte.
-  // Only the opcodes the ISA defines are listed; anything else traps 5.
-  const pops = new Uint8Array(256);
-  const push = new Uint8Array(256);
-  const imm = new Uint8Array(256);
-  const known = new Uint8Array(256);
-  const def = (op, i, p, u) => { known[op] = 1; imm[op] = i; pops[op] = p; push[op] = u; };
-  def(0x00, 0, 0, 0); def(0x01, 1, 0, 1); def(0x02, 4, 0, 1);
-  def(0x03, 0, 1, 0); def(0x04, 0, 1, 2); def(0x05, 0, 2, 2);
-  def(0x06, 0, 2, 3); def(0x07, 0, 3, 3);
-  for (let o = 0x10; o <= 0x16; o++) def(o, 0, 2, 1);
-  def(0x17, 0, 1, 1);
-  for (let o = 0x18; o <= 0x1e; o++) def(o, 0, 2, 1);
-  def(0x1b, 0, 1, 1);
-  for (let o = 0x20; o <= 0x22; o++) def(o, 0, 2, 1);
-  def(0x30, 2, 0, 0); def(0x31, 2, 1, 0); def(0x32, 2, 1, 0);
-  def(0x33, 2, 0, 0); def(0x34, 0, 0, 0);
-  def(0x40, 0, 1, 1); def(0x41, 0, 2, 0);
-  def(0x50, 0, 1, 0); def(0x51, 0, 1, 0); def(0x52, 0, 0, 1); def(0x53, 0, 1, 0);
 
   for (;;) {
     if (steps === STEP_LIMIT) return [out.subarray(0, olen), 10];
@@ -140,11 +146,19 @@ function run(program, input) {
         break;
       }
       case 0x50: {
-        const bytes = enc.encode(String(S[sp - 1]));
-        if (olen + bytes.length > OUTPUT_MAX) return [out.subarray(0, olen), 11];
+        // PRINT: decimal ASCII, no newline. Convert by hand into the scratch
+        // buffer (no TextEncoder allocation per print); -2147483648 handled by
+        // working on the unsigned magnitude, since -(-2147483648) overflows.
+        const v = S[sp - 1];
+        let u = v < 0 ? -v >>> 0 : v >>> 0;
+        let d = 11;
+        do { digits[--d] = 48 + (u % 10); u = (u / 10) | 0; } while (u);
+        if (v < 0) digits[--d] = 45;
+        const len = 11 - d;
+        if (olen + len > OUTPUT_MAX) return [out.subarray(0, olen), 11];
         sp--;
-        out.set(bytes, olen);
-        olen += bytes.length;
+        out.set(digits.subarray(d), olen);
+        olen += len;
         break;
       }
       case 0x51:
